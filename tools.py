@@ -1,196 +1,128 @@
+import os
+import re
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
 
 import requests
-from langchain_core.tools import StructuredTool
 
 
-# ==================================================
-# CONFIGURATION
-# ==================================================
-
-WIKIPEDIA_API_URL = "https://en.wikipedia.org/w/api.php"
-
-HEADERS = {
-    "User-Agent": "AIResearchAssistant/1.0 (educational project)"
-}
-
-REQUEST_TIMEOUT = 20
+# Folder where generated reports will be saved
+BASE_DIR = Path(__file__).resolve().parent
+REPORTS_DIR = BASE_DIR / "reports"
 
 
-# ==================================================
-# 1. DUCKDUCKGO WEB SEARCH
-# ==================================================
-
-def search_web(query: str) -> str:
-    """Search the web and return relevant search results."""
-
+def search_tool(query: str) -> str:
+    """
+    Search the web for information about a topic.
+    Uses a short timeout so a slow search does not block the program for too long.
+    """
     try:
-        from langchain_community.tools import DuckDuckGoSearchRun
+        # Support both newer and older versions of the DDGS package.
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
 
-        search = DuckDuckGoSearchRun()
-        result = search.invoke(query)
-
-        if not result or not str(result).strip():
-            return "No useful web search results were returned."
-
-        return str(result)
-
-    except Exception as error:
-        return (
-            "WEB_SEARCH_FAILED\n"
-            f"Error type: {type(error).__name__}\n"
-            f"Details: {error}\n"
-            "No verified web-search results were obtained."
-        )
-
-
-search_tool = StructuredTool.from_function(
-    func=search_web,
-    name="search",
-    description=(
-        "Search the web for information about the requested research topic. "
-        "Use focused queries about the topic's architecture, components, "
-        "working principles, examples, applications, and limitations."
-    ),
-)
-
-
-# ==================================================
-# 2. WIKIPEDIA SEARCH
-# Uses the official MediaWiki API directly.
-# ==================================================
-
-def search_wikipedia(query: str) -> str:
-    """Search Wikipedia and return article summaries with URLs."""
-
-    try:
-        search_response = requests.get(
-            WIKIPEDIA_API_URL,
-            params={
-                "action": "query",
-                "list": "search",
-                "srsearch": query,
-                "srlimit": 5,
-                "format": "json",
-            },
-            headers=HEADERS,
-            timeout=REQUEST_TIMEOUT,
-        )
-
-        search_response.raise_for_status()
-        search_data = search_response.json()
-
-        results = search_data.get("query", {}).get("search", [])
+        with DDGS(timeout=8) as ddgs:
+            results = list(ddgs.text(query, max_results=5))
 
         if not results:
-            return f"No Wikipedia articles found for: {query}"
+            return "No web search results were found."
 
-        articles = []
+        formatted_results = []
 
-        for result in results:
-            title = result.get("title", "").strip()
+        for index, result in enumerate(results, start=1):
+            title = result.get("title", "Untitled")
+            body = result.get("body", "")
+            url = result.get("href") or result.get("link") or ""
 
-            if not title:
-                continue
-
-            summary_response = requests.get(
-                WIKIPEDIA_API_URL,
-                params={
-                    "action": "query",
-                    "prop": "extracts",
-                    "exintro": True,
-                    "explaintext": True,
-                    "titles": title,
-                    "format": "json",
-                },
-                headers=HEADERS,
-                timeout=REQUEST_TIMEOUT,
+            formatted_results.append(
+                f"{index}. {title}\n"
+                f"Summary: {body}\n"
+                f"URL: {url}"
             )
 
-            summary_response.raise_for_status()
-            summary_data = summary_response.json()
-
-            pages = (
-                summary_data.get("query", {}).get("pages", {})
-            )
-
-            for page in pages.values():
-                summary = page.get("extract", "").strip()
-
-                if not summary:
-                    continue
-
-                article_url = (
-                    "https://en.wikipedia.org/wiki/"
-                    + quote(title.replace(" ", "_"), safe="()_")
-                )
-
-                articles.append(
-                    f"ARTICLE TITLE: {title}\n"
-                    f"ARTICLE URL: {article_url}\n"
-                    f"ARTICLE SUMMARY:\n{summary[:3500]}"
-                )
-
-        if not articles:
-            return (
-                f"Wikipedia returned no usable article summaries "
-                f"for: {query}"
-            )
-
-        return "\n\n" + ("\n\n" + "=" * 60 + "\n\n").join(articles)
-
-    except requests.exceptions.Timeout:
-        return "WIKIPEDIA_FAILED: The request timed out."
-
-    except requests.exceptions.RequestException as error:
-        return (
-            "WIKIPEDIA_FAILED: "
-            f"{type(error).__name__}: {error}"
-        )
-
-    except (ValueError, KeyError) as error:
-        return (
-            "WIKIPEDIA_FAILED: Invalid API response. "
-            f"{type(error).__name__}: {error}"
-        )
+        return "\n\n".join(formatted_results)
 
     except Exception as error:
         return (
-            "WIKIPEDIA_FAILED: "
-            f"{type(error).__name__}: {error}"
+            "Web search was unavailable. "
+            f"Reason: {type(error).__name__}: {error}"
         )
 
 
-wiki_tool = StructuredTool.from_function(
-    func=search_wikipedia,
-    name="wikipedia",
-    description=(
-        "Search Wikipedia for relevant background information, "
-        "technical definitions, architecture, and applications. "
-        "Use a specific research query."
-    ),
-)
+def wiki_tool(topic: str) -> str:
+    """
+    Retrieve a short topic summary from Wikipedia's MediaWiki API.
+    """
+    url = "https://en.wikipedia.org/w/api.php"
+
+    headers = {
+        "User-Agent": "AIResearchAssistant/1.0 (educational research project)"
+    }
+
+    params = {
+        "action": "query",
+        "format": "json",
+        "prop": "extracts",
+        "exintro": True,
+        "explaintext": True,
+        "redirects": 1,
+        "titles": topic,
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        pages = data.get("query", {}).get("pages", {})
+
+        for page in pages.values():
+            title = page.get("title", topic)
+            extract = page.get("extract", "").strip()
+
+            if extract:
+                return f"Wikipedia summary for {title}:\n{extract}"
+
+        return f"No Wikipedia summary was found for '{topic}'."
+
+    except requests.RequestException as error:
+        return f"Wikipedia request failed: {error}"
+
+    except ValueError:
+        return "Wikipedia returned a response that could not be read."
 
 
-# ==================================================
-# 3. SAVE A COMPLETE REPORT
-# ==================================================
+def clean_text(text: str) -> str:
+    """Remove excessive whitespace from generated text."""
+    text = text.replace("\r\n", "\n")
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
-def save_to_txt(data: str) -> str:
-    """Save the complete report to a unique text file."""
 
-    reports_folder = Path(__file__).resolve().parent / "reports"
-    reports_folder.mkdir(parents=True, exist_ok=True)
+def save_to_txt(content: str, topic: str) -> str:
+    """
+    Save a report with a unique filename inside the reports directory.
+    Returns the full path of the saved report.
+    """
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime(
-        "%Y-%m-%d_%H-%M-%S-%f"
-    )
+    safe_topic = re.sub(r"[^a-zA-Z0-9_-]+", "_", topic.strip())
+    safe_topic = safe_topic.strip("_")[:50] or "research"
 
-    filename = reports_folder / f"research_report_{timestamp}.txt"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"research_report_{safe_topic}_{timestamp}.txt"
+    file_path = REPORTS_DIR / filename
 
-    with filename.open("w", encoding="utf-8") as file:
-        file.write(data.rstrip() + "\n")
+    with open(file_path, "w", encoding="utf-8") as file:
+        file.write(clean_text(content))
+        file.write("\n")
 
-    return str(filename)
+    return str(file_path)
