@@ -1,0 +1,11 @@
+
+langchain
+langchain-classic
+langchain-community
+langchain-core
+langchain-ollama
+wikipedia
+duckduckgo-search
+ddgs
+python-dotenv
+pydantic

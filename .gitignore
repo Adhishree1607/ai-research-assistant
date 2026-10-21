@@ -1,0 +1,17 @@
+# Environment variables and API keys
+.env
+.env.*
+
+# Python virtual environments
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Generated research reports
+reports/
+
+# Old generated output
+research_output.txt
